@@ -1,16 +1,26 @@
 import WebGL from 'three/addons/capabilities/WebGL.js';
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
+import{ GUI } from 'dat.gui'
 
 //--- COMPATIBILITY CHECK ---//
 if (WebGL.isWebGLAvailable() ) {
 
 //--- MAIN PROGRAM ---//
 
+// app constants
+const collision_dampening = 0;
+const air_dampening = 1;
+let properties = {
+  gravity: 0,
+  speed: 0.5
+}
+
+
 // set up scene
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera( 75, window.innerWidth / window.innerHeight, 0.1, 1000);
-camera.position.z = 20;
+camera.position.z = 30;
 //const axes_helper = new THREE.AxesHelper( 5 );
 //scene.add( axes_helper );
 
@@ -20,13 +30,20 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement );
 
 // set up controls
-//const controls = new MapControls( camera, renderer.domElement );
-//controls.enableDamping = true;
+const controls = new MapControls( camera, renderer.domElement );
+controls.enableDamping = true;
+
+// set up GUI
+const gui = new GUI();
+const properties_folder = gui.addFolder('Properties');
+properties_folder.add(properties, 'speed', 0, 3);
+properties_folder.add(properties, 'gravity', -10, 10);
+properties_folder.open();
 
 // particle handles
-const SPHERE_RADIUS = 0.25;
-const PARTICLE_COUNT = 1000;
-let particles = new Array();
+const SPHERE_RADIUS = 0.75;
+const PARTICLE_COUNT = 30;
+let range = 10;
 
 function generate_random(min, max) {
   let rand = Math.random() * (max - min) + min;
@@ -34,29 +51,28 @@ function generate_random(min, max) {
   return rand;
 }
 
+let particles = new Array();
+
 for (let i = 0; i < PARTICLE_COUNT; i++) {
   // set up geometry
   const sphere_geometry = new THREE.SphereGeometry( SPHERE_RADIUS, 32, 16 );
-  const sphere_material = new THREE.MeshBasicMaterial( { color: 0x4263f5 } );
+  const sphere_material = new THREE.MeshBasicMaterial();
+  sphere_material.color = new THREE.Color().setHSL(generate_random(0,1), 1, .5)
   const sphere = new THREE.Mesh( sphere_geometry, sphere_material );
-  sphere.position.x = generate_random(-9.75, 9.75);
-  sphere.position.y = generate_random(-6, 6);
-  sphere.position.z = generate_random(-9.75, 9.75);
+  sphere.position.x = generate_random(-9.50, 9.50);
+  sphere.position.y = generate_random(-9.50, 9.50);
+  sphere.position.z = generate_random(-9.50, 9.50);
   scene.add(sphere);
-  let velocity = new THREE.Vector3(0, 0 , 0);
-  particles[i] = {mesh: sphere, velocity: velocity};
+  let velocity = new THREE.Vector3();
+  velocity.x = generate_random(0,.25);
+  velocity.y = generate_random(0,.25);
+  velocity.z = generate_random(0,.25);
+  particles[i] = {mesh: sphere, v: velocity};
 }
 
-const plane_geometry = new THREE.PlaneGeometry(20, 20);
-const plane_material = new THREE.MeshBasicMaterial( { color: 0xFFFFFF } );
-const plane = new THREE.Mesh( plane_geometry, plane_material );
-scene.add(plane);
-plane.rotateX(-90 * (Math.PI / 180));
-plane.position.y = -7;
-
-// app constants
-const gravity = -3.8;
-const collision_dampening = 0.70;
+let box = new THREE.BoxGeometry(20, 20, 20);
+let box_mesh = new THREE.Line( box );
+scene.add( new THREE.BoxHelper (box_mesh, 'white') );
 
 // app states
 let clock = new THREE.Clock();
@@ -70,58 +86,55 @@ function onWindowResize() {
 }
 window.addEventListener( 'resize', onWindowResize );
 
+let distance = new THREE.Vector3();
+let normal = new THREE.Vector3();
+let relative_v = new THREE.Vector3();
+let dot = new THREE.Vector3();
+let movement = new THREE.Vector3();
+
 function animate() {
   requestAnimationFrame( animate );
 
-  //controls.update();
+  controls.update();
 
   // get delta time
   let dt = clock.getDelta() * 2;
 
   // update sphere position
   for (let i = 0; i < PARTICLE_COUNT; i++) {
-    particles[i].velocity.y += gravity * dt;
-    particles[i].mesh.position.y += particles[i].velocity.y * dt;
-    resolve_collisions(particles[i]);
+    
+    let p1 = particles[i];
+
+    // if the balls hit a wall, their velocities are reversed
+    if (p1.mesh.position.x + SPHERE_RADIUS > range || p1.mesh.position.x - SPHERE_RADIUS < -range) p1.v.x *= -1;
+    if (p1.mesh.position.y + SPHERE_RADIUS > range || p1.mesh.position.y - SPHERE_RADIUS < -range) p1.v.y *= -1;
+    if (p1.mesh.position.z + SPHERE_RADIUS > range || p1.mesh.position.z - SPHERE_RADIUS < -range) p1.v.z *= -1;
+
+    for (let j = i + 1; j < PARTICLE_COUNT; j++) {
+      let p2 = particles[j];
+
+      distance.copy(p1.mesh.position).add(p1.v).sub(p2.mesh.position).sub(p2.v);
+
+      if (distance.length() < 2 * SPHERE_RADIUS) {
+ 
+        normal.copy(p1.mesh.position).sub(p2.mesh.position).normalize();
+
+        relative_v.copy( p1.v ).sub( p2.v );
+        dot = relative_v.dot( normal );
+
+        normal = normal.multiplyScalar( dot );
+
+        p1.v.sub( normal );
+        p2.v.add( normal );
+      }
+    }
+
+    p1.v.y += properties.gravity * dt;
+    movement.copy(p1.v).multiplyScalar(properties.speed);
+    p1.mesh.position.add(movement);
   }
 
   renderer.render( scene, camera );
-}
-
-function resolve_collisions(object) {
-  
-  let x_bounds = 10;
-  let y_bounds = plane.position.y;
-  let z_bounds = 10;
-  let x_position = object.mesh.position.x;
-  let y_position = object.mesh.position.y;
-  let z_position = object.mesh.position.z;
-
-  if (y_position - SPHERE_RADIUS <= y_bounds) {
-    object.mesh.position.y = y_position + Math.abs(y_position - SPHERE_RADIUS - y_bounds);
-    object.velocity.y *= -1 * collision_dampening; 
-  }
-
-  if (x_position + SPHERE_RADIUS >= x_bounds) {
-    object.mesh.position.x = x_position - Math.abs(x_position - SPHERE_RADIUS - x_bounds);
-    object.velocity.x = -1 * abs(object.velocity.y) * collision_dampening;
-  }
-
-  if (x_position + SPHERE_RADIUS <= -x_bounds) {
-    object.mesh.position.x = x_position + Math.abs(x_position - SPHERE_RADIUS - x_bounds);
-    object.velocity.x = abs(object.velocity.y) * collision_dampening;
-  }
-
-  if (z_position + SPHERE_RADIUS >= z_bounds) {
-    object.mesh.position.z = z_position - Math.abs(z_position - SPHERE_RADIUS - z_bounds);
-    object.velocity.z = -1 * abs(object.velocity.y) * collision_dampening;
-  }
-
-  if (z_position + SPHERE_RADIUS <= -z_bounds) {
-    object.mesh.position.z = z_position + Math.abs(z_position - SPHERE_RADIUS - z_bounds);
-    object.velocity.z = abs(object.velocity.y) * collision_dampening;
-  }
-
 }
 
 function main() {
